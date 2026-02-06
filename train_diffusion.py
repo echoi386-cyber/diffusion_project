@@ -32,7 +32,7 @@ def main():
     nmodes = 5
     scale = 10.0
     angles = torch.linspace(0, 2 * 3.14159, nmodes + 1)[:nmodes]
-    means = torch.stack([torch.cos(angles), torch.sin(angles)], dim=1) * scale
+    means = torch.stack([torch.cos(angles), torch.sin(angles)], dim=1) * scale.to(device)
     
     # 2. SQUASH the Y-axis to create spectral disparity
     # X-axis (Dim 0) stays large (scale 10). Y-axis (Dim 1) becomes small (scale 1).
