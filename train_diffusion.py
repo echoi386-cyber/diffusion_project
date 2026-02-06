@@ -22,7 +22,10 @@ def main():
     parser.add_argument("--plot", action="store_true", help="Plot flow and score trajectories")
     parser.add_argument("--simulate", action="store_true", help="Simulate flow and score trajectories")
 
-    args = parser.parse_args()
+    args = parser.parse_args(args=[])
+    args.train_score=True
+    args.plot=True
+    args.simulate=True
     device = torch.device(args.device)
 
     print(f"Using device: {device}")
