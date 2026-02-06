@@ -692,8 +692,9 @@ class ConditionalScoreMatchingTrainer(Trainer):
 
         diff = pred_score - target_score
         
-        # FIX: Multiply by beta(t) to prevent explosion at t=1
-        # This effectively matches the epsilon-prediction objective (DSM)
+        # === FIX APPLIED HERE ===
+        # Multiply by beta(t) to prevent explosion at t=1
+        # Include data_std (spatial_weight) for Equal SNR compliance.
         spatial_weight = self.path.data_std.detach()
         temporal_weight = self.path.beta(t)
         
@@ -760,15 +761,18 @@ class LangevinFlowSDE(SDE):
             - u_t(x|z): shape (batch_size, dim)
         """
         return self.sigma * torch.randn_like(x)
+
 class ScoreFromVectorField(torch.nn.Module):
     """
     Parameterization of score via learned vector field (for the special case of a Gaussian conditional probability path)
     """
-    def __init__(self, vector_field: MLPVectorField, alpha: Alpha, beta: Beta):
+    def __init__(self, vector_field: MLPVectorField, alpha: Alpha, beta: Beta, data_std: torch.Tensor):
         super().__init__()
         self.vector_field = vector_field
         self.alpha = alpha
         self.beta = beta
+        # FIX: Store data_std as buffer
+        self.register_buffer("data_std", data_std)
 
     def forward(self, x: torch.Tensor, t: torch.Tensor):
         """
@@ -777,16 +781,21 @@ class ScoreFromVectorField(torch.nn.Module):
         Returns:
         - score: (bs, dim)
         """
-        return (self.alpha(t)*self.vector_field(x,t)-self.alpha.dt(t)*x)/(self.beta(t)**2*self.alpha.dt(t)-self.alpha(t)*self.beta.dt(t)*self.beta(t))
+        vec = (self.alpha(t)*self.vector_field(x,t)-self.alpha.dt(t)*x)/(self.beta(t)**2*self.alpha.dt(t)-self.alpha(t)*self.beta.dt(t)*self.beta(t))
+        # FIX: Normalize by variance (Covariance^-1)
+        return vec / (self.data_std ** 2)
+
 class VectorFieldFromScore(torch.nn.Module):
     """
     Parameterization of score via learned vector field (for the special case of a Gaussian conditional probability path)
     """
-    def __init__(self, score: MLPScore, alpha: Alpha, beta: Beta):
+    def __init__(self, score: MLPScore, alpha: Alpha, beta: Beta, data_std: torch.Tensor):
         super().__init__()
         self.score = score
         self.alpha = alpha
         self.beta = beta
+        # FIX: Store data_std as buffer
+        self.register_buffer("data_std", data_std)
 
     def forward(self, x: torch.Tensor, t: torch.Tensor):
         """
@@ -795,7 +804,9 @@ class VectorFieldFromScore(torch.nn.Module):
         Returns:
         - vector_field: (bs, dim)
         """
-        return self.alpha.dt(t)/self.alpha(t)*x + (self.beta(t)**2*self.alpha.dt(t)/self.alpha(t)-self.beta.dt(t)*self.beta(t))*self.score(x,t)
+        # FIX: Multiply by variance (Covariance)
+        score_term = self.score(x,t) * (self.data_std ** 2)
+        return self.alpha.dt(t)/self.alpha(t)*x + (self.beta(t)**2*self.alpha.dt(t)/self.alpha(t)-self.beta.dt(t)*self.beta(t))*score_term
 
 def hist2d_samples(samples, ax: Optional[Axes] = None, bins: int = 200, scale: float = 5.0, percentile: int = 99, **kwargs):
     H, xedges, yedges = np.histogram2d(samples[:, 0], samples[:, 1], bins=bins, range=[[-scale, scale], [-scale, scale]])
@@ -858,7 +869,8 @@ def compare_scores(path,flow_model,score_model):
     # Define score networks #
     #########################
     learned_score_model = score_model
-    flow_score_model = ScoreFromVectorField(flow_model, path.alpha, path.beta)
+    # FIX: Pass data_std to wrapper
+    flow_score_model = ScoreFromVectorField(flow_model, path.alpha, path.beta, path.data_std)
 
 
     ###############################
@@ -925,7 +937,8 @@ def compare_vector_fields(path,flow_model,score_model):
     # Define score networks #
     #########################
     learned_flow_model = flow_model 
-    score_flow_model = VectorFieldFromScore(score_model, path.alpha, path.beta)
+    # FIX: Pass data_std to wrapper
+    score_flow_model = VectorFieldFromScore(score_model, path.alpha, path.beta, path.data_std)
 
     ###############################
     # Plot score fields over time #
@@ -1228,5 +1241,3 @@ def plot_results(results):
     # Save plot as PDF
     # -------------------------------------------------------
     plt.savefig("./convergence.pdf", bbox_inches="tight")
-
-# %%

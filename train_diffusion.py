@@ -46,8 +46,10 @@ def main():
     ).to(device)
 
     # === EQUAL SNR STATS ===
-    print("Compute data stats for Equal SNR")
+    print("Computing dataset stats for Equal SNR...")
     stat_samples = p_data.sample(10000)
+    # CORRECT: Use the REAL data std (~7.0). 
+    # The updated Utils file now properly handles the scaling so this won't explode.
     data_std = torch.std(stat_samples, dim=0)
     print(f"Data Std: {data_std}")
     
@@ -91,7 +93,7 @@ def main():
         score_trainer.train(
             num_epochs=args.epochs,
             device=device,
-            lr=2e-4, 
+            lr=1e-3, 
             batch_size=args.batch_size,
         )
         torch.save(score_model.state_dict(), "score_model.pt")
@@ -123,11 +125,13 @@ def main():
     # -------------------------------
     if args.plot:
         if flow_model:
-            flow_score_model = du.ScoreFromVectorField(flow_model,path.alpha,path.beta)
+            # Pass data_std to wrapper
+            flow_score_model = du.ScoreFromVectorField(flow_model,path.alpha,path.beta, data_std)
             du.plot_flow(path, flow_model, 1000, output_file="flow_trajectory.pdf")
             du.plot_score(path, flow_model, flow_score_model, 300, output_file="flow_stochastic_trajectory.pdf")
         if score_model:
-            score_flow_model = du.VectorFieldFromScore(score_model,path.alpha,path.beta)
+            # Pass data_std to wrapper
+            score_flow_model = du.VectorFieldFromScore(score_model,path.alpha,path.beta, data_std)
             du.plot_flow(path, score_flow_model, 1000, output_file="score_deterministic_trajectory.pdf")
             du.plot_score(path, score_flow_model, score_model, 300, output_file="score_trajectory.pdf")
             du.plot_score(path, flow_model, score_model, 300, output_file="score_flow_trajectory.pdf")
@@ -154,7 +158,8 @@ def main():
             results["flow_deterministic"] = (timestep_list, W_list)
 
             # 2. Flow Model (Stochastic)
-            flow_score_model = du.ScoreFromVectorField(flow_model, path.alpha, path.beta)
+            # Pass data_std to wrapper
+            flow_score_model = du.ScoreFromVectorField(flow_model, path.alpha, path.beta, data_std)
             W_list = []
             for num_steps in timestep_list:
                 samples = du.simulate_score(path, flow_model, flow_score_model, num_samples, num_steps)
@@ -167,7 +172,8 @@ def main():
         
         # 3. Score Model (Stochastic & Deterministic)
         if score_model:
-            score_flow_model = du.VectorFieldFromScore(score_model, path.alpha, path.beta)
+            # Pass data_std to wrapper
+            score_flow_model = du.VectorFieldFromScore(score_model, path.alpha, path.beta, data_std)
             
             # Stochastic Score
             W_list = []
