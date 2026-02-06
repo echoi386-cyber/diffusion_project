@@ -682,21 +682,23 @@ class ConditionalScoreMatchingTrainer(Trainer):
         self.path = path
 
     def get_train_loss(self, batch_size: int) -> torch.Tensor:
-        #z = self.path.p_data.sample_discrete(batch_size)
-        #z = self.path.p_data.sample_projected(batch_size)
+        # ... (sampling code) ...
         z = self.path.p_data.sample(batch_size)
-        t = torch.rand(batch_size,1).to(device)
-        x = self.path.sample_conditional_path(z,t)
+        t = torch.rand(batch_size, 1).to(device)
+        x = self.path.sample_conditional_path(z, t)
 
         target_score = self.path.conditional_score(x, z, t)
-
         pred_score = self.model(x, t)
 
-        diff = pred_score-target_score
+        diff = pred_score - target_score
         
-        weight = self.path.data_std.detach()
-        weighted_diff = diff * weight
-
+        # FIX: Multiply by beta(t) to prevent explosion at t=1
+        # This effectively matches the epsilon-prediction objective (DSM)
+        spatial_weight = self.path.data_std.detach()
+        temporal_weight = self.path.beta(t)
+        
+        weighted_diff = diff * spatial_weight * temporal_weight
+        
         loss = torch.mean(weighted_diff ** 2)
         return loss
 class ConditionalFlowMatchingTrainer(Trainer):
