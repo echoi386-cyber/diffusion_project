@@ -2,8 +2,6 @@
 #!/usr/bin/env python3
 """
 run_diffusion.py
-
-Command-line interface for training and comparing diffusion flow and score models.
 """
 
 import argparse
@@ -21,12 +19,12 @@ def main():
     parser.add_argument("--plot", action="store_true", help="Plot flow and score trajectories")
     parser.add_argument("--simulate", action="store_true", help="Simulate flow and score trajectories")
 
-    # FIX 1: Handle Colab arguments by passing empty list
+    # Handle Colab arguments
     args = parser.parse_args(args=[])
     
-    # Enable flags manually for notebook execution
+    # Enable flags
     args.train_score = True
-    args.train_flow = True  # Added back in case you want to train flow too
+    args.train_flow = True
     args.compare = True
     args.plot = True
     args.simulate = True
@@ -41,7 +39,6 @@ def main():
     }
 
     # === DATA SETUP ===
-    # Using your original symmetric_2D format
     p_data = du.GaussianMixture.symmetric_2D(
         nmodes=5, 
         std=PARAMS["target_std"], 
@@ -54,7 +51,7 @@ def main():
     data_std = torch.std(stat_samples, dim=0)
     print(f"Data Std: {data_std}")
     
-    # Prepare conditional probability path with data_std
+    # Prepare conditional probability path
     path = du.GaussianConditionalProbabilityPath(
         p_data=p_data,
         alpha=du.LinearAlpha(),
@@ -81,7 +78,6 @@ def main():
             batch_size=args.batch_size,
         )
         torch.save(flow_model.state_dict(), "flow_model.pt")
-        print("Saved flow model to flow_model.pt")
 
     # -------------------------------
     # Train Score Matching Model
@@ -91,7 +87,7 @@ def main():
         score_model = du.MLPScore(dim=dim, hiddens=hiddens).to(device)
         score_trainer = du.ConditionalScoreMatchingTrainer(path, score_model)
         
-        # FIX 2: Lower Learning Rate for Weighted Loss (Prevents exploding/divergence)
+        # Lower LR for Weighted Loss
         score_trainer.train(
             num_epochs=args.epochs,
             device=device,
@@ -99,32 +95,26 @@ def main():
             batch_size=args.batch_size,
         )
         torch.save(score_model.state_dict(), "score_model.pt")
-        print("Saved score model to score_model.pt")
 
     # -------------------------------
-    # Load models (if needed)
+    # Load models
     # -------------------------------
     if flow_model is None:
         try:
             flow_model = du.MLPVectorField(dim=dim, hiddens=hiddens).to(device)
             flow_model.load_state_dict(torch.load("flow_model.pt", map_location=device))
-            print("Loaded pretrained flow_model.pt")
-        except FileNotFoundError:
-            pass
+        except FileNotFoundError: pass
 
     if score_model is None:
         try:
             score_model = du.MLPScore(dim=dim, hiddens=hiddens).to(device)
             score_model.load_state_dict(torch.load("score_model.pt", map_location=device))
-            print("Loaded pretrained score_model.pt")
-        except FileNotFoundError:
-            pass
+        except FileNotFoundError: pass
 
     # -------------------------------
     # Comparisons
     # -------------------------------
     if args.compare and flow_model and score_model:
-        print("\n=== Comparing Vector Fields and Scores ===")
         du.compare_vector_fields(path, flow_model, score_model)
         du.compare_scores(path, flow_model, score_model)
 
@@ -132,7 +122,6 @@ def main():
     # Plot Trajectories
     # -------------------------------
     if args.plot:
-        print("\n=== Plotting Flow and Score Simulations ===")
         if flow_model:
             flow_score_model = du.ScoreFromVectorField(flow_model,path.alpha,path.beta)
             du.plot_flow(path, flow_model, 1000, output_file="flow_trajectory.pdf")
@@ -144,7 +133,7 @@ def main():
             du.plot_score(path, flow_model, score_model, 300, output_file="score_flow_trajectory.pdf")
 
     # -------------------------------
-    # Simulate (Full Original Logic)
+    # Simulate
     # -------------------------------
     if args.simulate:
         num_samples = 10000
@@ -157,7 +146,8 @@ def main():
             W_list = []
             for num_steps in timestep_list:
                 samples = du.simulate_flow(path, flow_model, num_samples, num_steps)
-                target_samples = path.p_data.sample_projected(num_samples)
+                # FIX: Use .sample() instead of .sample_projected()
+                target_samples = path.p_data.sample(num_samples)
                 W = du.wasserstein_distance(samples, target_samples)
                 W_list.append(W.cpu())
                 print(f"[Flow] Steps={num_steps:<4d} W={W:.4f}")
@@ -168,7 +158,8 @@ def main():
             W_list = []
             for num_steps in timestep_list:
                 samples = du.simulate_score(path, flow_model, flow_score_model, num_samples, num_steps)
-                target_samples = path.p_data.sample_projected(num_samples)
+                # FIX: Use .sample() instead of .sample_projected()
+                target_samples = path.p_data.sample(num_samples)
                 W = du.wasserstein_distance(samples, target_samples)
                 W_list.append(W.cpu())
                 print(f"[Flow Stochastic] Steps={num_steps:<4d} W={W:.4f}")
@@ -182,7 +173,8 @@ def main():
             W_list = []
             for num_steps in timestep_list:
                 samples = du.simulate_score(path, score_flow_model, score_model, num_samples, num_steps)
-                target_samples = path.p_data.sample_projected(num_samples)
+                # FIX: Use .sample() instead of .sample_projected()
+                target_samples = path.p_data.sample(num_samples)
                 W = du.wasserstein_distance(samples, target_samples)
                 W_list.append(W.cpu())
                 print(f"[Score Stochastic] Steps={num_steps:<4d} W={W:.4f}")
@@ -192,7 +184,8 @@ def main():
             W_list = []
             for num_steps in timestep_list:
                 samples = du.simulate_flow(path, score_flow_model, num_samples, num_steps)
-                target_samples = path.p_data.sample_projected(num_samples)
+                # FIX: Use .sample() instead of .sample_projected()
+                target_samples = path.p_data.sample(num_samples)
                 W = du.wasserstein_distance(samples, target_samples)
                 W_list.append(W.cpu())
                 print(f"[Score Deterministic] Steps={num_steps:<4d} W={W:.4f}")
