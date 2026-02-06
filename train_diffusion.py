@@ -10,7 +10,6 @@ import argparse
 import torch
 import diffusion_utils as du
 
-
 def main():
     parser = argparse.ArgumentParser(description="Train and visualize diffusion flow/score models.")
     parser.add_argument("--epochs", type=int, default=1000, help="Number of training epochs")
@@ -22,37 +21,44 @@ def main():
     parser.add_argument("--plot", action="store_true", help="Plot flow and score trajectories")
     parser.add_argument("--simulate", action="store_true", help="Simulate flow and score trajectories")
 
+    # FIX 1: Pass empty list to handle Colab/Jupyter kernel arguments
     args = parser.parse_args(args=[])
-    args.train_score=True
-    args.plot=True
-    args.simulate=True
-    device = torch.device(args.device)
 
+    # MANUAL OVERRIDES (Ensure these are True for your run)
+    args.train_score = True
+    args.plot = True
+    args.simulate = True
+    
+    device = torch.device(args.device)
     print(f"Using device: {device}")
+
+    # === DATASET SETUP ===
     nmodes = 5
     scale = 10.0
     angles = torch.linspace(0, 2 * 3.14159, nmodes + 1)[:nmodes]
+    
+    # FIX 2: Create 'means' directly on the device
     means = (torch.stack([torch.cos(angles), torch.sin(angles)], dim=1) * scale).to(device)
     
-    # 2. SQUASH the Y-axis to create spectral disparity
-    # X-axis (Dim 0) stays large (scale 10). Y-axis (Dim 1) becomes small (scale 1).
+    # SQUASH the Y-axis to create spectral disparity (Anisotropic Data)
     squash_factor = torch.tensor([1.0, 0.1]).to(device)
     means = means * squash_factor
     
-    # 3. Create anisotropic covariance for clusters too
+    # FIX 3: Ensure covariance and weights are on device
     covs = torch.diag_embed(torch.ones(nmodes, 2)).to(device)
-    covs = covs * (torch.tensor([1.0, 0.1]).to(device)**2) # Small variance in Y
+    covs = covs * (torch.tensor([1.0, 0.1]).to(device)**2) 
     
     weights = torch.ones(nmodes).to(device) / nmodes
     
-    #p_data = du.GaussianMixture.symmetric_4D(nmodes=5, std=PARAMS["target_std"]).to(device)
+    # Initialize custom mixture
     p_data = du.GaussianMixture(means, covs, weights).to(device)
 
+    # === EQUAL SNR STATS ===
     print("Computing dataset stats for Equal SNR Approach")
-
     stat_samples = p_data.sample(10000)
     data_std = torch.std(stat_samples, dim=0)
     print(f"Data Std (Signal Variance C^1/2): {data_std}")
+
     # Prepare conditional probability path
     path = du.GaussianConditionalProbabilityPath(
         p_data=p_data,
@@ -61,7 +67,6 @@ def main():
         data_std=data_std
     ).to(device)
 
-    # Shared model hyperparameters
     dim = p_data.dim
     hiddens = [64,64,64,64]
 
@@ -73,6 +78,9 @@ def main():
     if args.train_flow:
         print("\n=== Training Flow Matching Model ===")
         flow_model = du.MLPVectorField(dim=dim, hiddens=hiddens)
+        # FIX 4: Explicitly move model to device
+        flow_model = flow_model.to(device)
+        
         flow_trainer = du.ConditionalFlowMatchingTrainer(path, flow_model)
         flow_trainer.train(
             num_epochs=args.epochs,
@@ -87,8 +95,11 @@ def main():
     # Train Score Matching Model
     # -------------------------------
     if args.train_score:
-        print("\n=== Training Score Matching Model ===")
+        print("\n=== Training Score Matching Model (Equal SNR) ===")
         score_model = du.MLPScore(dim=dim, hiddens=hiddens)
+        # FIX 5: Explicitly move model to device
+        score_model = score_model.to(device)
+        
         score_trainer = du.ConditionalScoreMatchingTrainer(path, score_model)
         score_trainer.train(
             num_epochs=args.epochs,
@@ -102,20 +113,20 @@ def main():
     # -------------------------------
     # Load models (if needed)
     # -------------------------------
-    if flow_model is None:
+    if flow_model is None and (args.plot or args.simulate):
         try:
             flow_model = du.MLPVectorField(dim=dim, hiddens=hiddens)
-            flow_model.load_state_dict(torch.load("flow_model.pt"))
-            flow_model = flow_model.to(device)
+            flow_model.load_state_dict(torch.load("flow_model.pt", map_location=device))
+            flow_model = flow_model.to(device) # FIX 6: Re-assert device
             print("Loaded pretrained flow_model.pt")
         except FileNotFoundError:
             pass
 
-    if score_model is None:
+    if score_model is None and (args.plot or args.simulate):
         try:
             score_model = du.MLPScore(dim=dim, hiddens=hiddens)
-            score_model.load_state_dict(torch.load("score_model.pt"))
-            score_model = score_model.to(device)
+            score_model.load_state_dict(torch.load("score_model.pt", map_location=device))
+            score_model = score_model.to(device) # FIX 7: Re-assert device
             print("Loaded pretrained score_model.pt")
         except FileNotFoundError:
             pass
@@ -131,66 +142,35 @@ def main():
     # -------------------------------
     # Plot Trajectories
     # -------------------------------
-    if args.plot:
-        print("\n=== Plotting Flow and Score Simulations ===")
-        if flow_model:
-            flow_score_model = du.ScoreFromVectorField(flow_model,path.alpha,path.beta)
-            du.plot_flow(path, flow_model, 1000, output_file="flow_trajectory.pdf")
-            du.plot_score(path, flow_model, flow_score_model, 300, output_file="flow_stochastic_trajectory.pdf")
-        if score_model:
-            score_flow_model = du.VectorFieldFromScore(score_model,path.alpha,path.beta) 
-            du.plot_flow(path, score_flow_model, 1000, output_file="score_deterministic_trajectory.pdf") 
-            du.plot_score(path, score_flow_model, score_model, 300, output_file="score_trajectory.pdf")
-            du.plot_score(path, flow_model, score_model, 300, output_file="score_flow_trajectory.pdf")
+    if args.plot and score_model:
+        print("\n=== Plotting Trajectories ===")
+        # Note: We only plot Score model for Equal SNR verification
+        score_flow_model = du.VectorFieldFromScore(score_model,path.alpha,path.beta)
+        du.plot_score(path, score_flow_model, score_model, 300, output_file="score_trajectory.pdf")
 
     # -------------------------------
     # Simulate
     # -------------------------------
-    if args.simulate:
-        num_samples = 10000
-        timestep_list = torch.tensor([4,8,16,32,64,128,256])  # sweep values
-
+    if args.simulate and score_model:
+        print("\n=== Simulating ===")
+        num_samples = 2000
+        timestep_list = torch.tensor([10, 20, 50, 100])
+        
+        score_flow_model = du.VectorFieldFromScore(score_model, path.alpha, path.beta)
         results = {}
-        if flow_model and False:
-            flow_score_model = du.ScoreFromVectorField(flow_model, path.alpha, path.beta)
-            W_list = []
-            for num_steps in timestep_list:
-                samples = du.simulate_flow(path, flow_model, num_samples, num_steps)
-                target_samples = path.p_data.sample_projected(num_samples)
-                W = du.wasserstein_distance(samples, target_samples)
-                W_list.append(W.cpu())
-                print(f"[Flow] Steps={num_steps:<4d} W={W:.4f}")
-            results["flow_deterministic"] = (timestep_list, W_list)
-
-            W_list = []
-            for num_steps in timestep_list:
-                samples = du.simulate_score(path, flow_model, flow_score_model, num_samples, num_steps)
-                target_samples = path.p_data.sample_projected(num_samples)
-                W = du.wasserstein_distance(samples, target_samples)
-                W_list.append(W.cpu())
-                print(f"[Flow Stochastic] Steps={num_steps:<4d} W={W:.4f}")
-            results["flow_stochastic"] = (timestep_list, W_list)
-        if score_model:
-            score_flow_model = du.VectorFieldFromScore(score_model, path.alpha, path.beta)
-            W_list = []
-            for num_steps in timestep_list:
-                samples = du.simulate_score(path, score_flow_model, score_model, num_samples, num_steps)
-                target_samples = path.p_data.sample_projected(num_samples)
-                #target_samples = path.p_data.sample(num_samples) 
-                W = du.wasserstein_distance(samples, target_samples)
-                W_list.append(W.cpu())
-                print(f"[Score] Steps={num_steps:<4d} W={W:.4f}")
-            results["score_stochastic"] = (timestep_list, W_list)
-
-            W_list = []
-            for num_steps in timestep_list:
-                samples = du.simulate_flow(path, score_flow_model, num_samples, num_steps)
-                target_samples = path.p_data.sample_projected(num_samples)
-                #target_samples = path.p_data.sample(num_samples)
-                W = du.wasserstein_distance(samples, target_samples)
-                W_list.append(W.cpu())
-                print(f"[Score Deterministic] Steps={num_steps:<4d} W={W:.4f}")
-            results["score_deterministic"] = (timestep_list, W_list)
+        
+        W_list = []
+        target_samples = p_data.sample(num_samples) # Use full sample
+        
+        for num_steps in timestep_list:
+            # Deterministic Sampler (ODE)
+            samples = du.simulate_flow(path, score_flow_model, num_samples, num_steps)
+            W = du.wasserstein_distance(samples, target_samples)
+            W_list.append(W.cpu())
+            print(f"[Score Deterministic] Steps={num_steps:<4d} W={W:.4f}")
+            
+        results["score_deterministic"] = (timestep_list, W_list)
         du.plot_results(results)
+
 if __name__ == "__main__":
     main()
