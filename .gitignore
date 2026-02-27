@@ -52,3 +52,4 @@ data/
 *.pt
 *.pth
 *.ckpt
+.ssh/
