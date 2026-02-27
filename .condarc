@@ -1,0 +1,4 @@
+pkgs_dirs:
+  - /usr/scratch/echoi337/.conda_pkgs
+envs_dirs:
+  - /usr/scratch/echoi337/.conda_envs

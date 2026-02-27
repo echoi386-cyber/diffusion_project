@@ -1,0 +1,13 @@
+# Conda envs / Python envs
+.conda_envs/
+.conda_pkgs/
+.conda_cache/
+venv/
+.venv/
+
+# VSCode remote
+.vscode-server/
+
+# Caches
+__pycache__/
+.ipynb_checkpoints/

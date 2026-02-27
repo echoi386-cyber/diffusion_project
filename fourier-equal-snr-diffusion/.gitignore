@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.ipynb_checkpoints/
+
+# Env / conda
+.conda_envs/
+.conda_pkgs/
+.conda_cache/
+venv/
+.venv/
+
+# Outputs / data
+data/
+outputs/
+runs_*/
+*.pt
+*.pth
+*.ckpt
+
+# VSCode remote
+.vscode/
+.vscode-server/
+
+# OS
+.DS_Store
