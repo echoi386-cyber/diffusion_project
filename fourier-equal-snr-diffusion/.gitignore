@@ -25,3 +25,8 @@ runs_*/
 
 # OS
 .DS_Store
+# Conda / cache (server)
+.cache/
+.conda/
+.condarc
+.config/
