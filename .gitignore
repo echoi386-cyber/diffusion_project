@@ -1,13 +1,31 @@
-# Conda envs / Python envs
+# VSCode remote
+.vscode/
+.vscode-server/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.ipynb_checkpoints/
+
+# Conda / caches
+.cache/
+.conda/
+.condarc
+.config/
 .conda_envs/
 .conda_pkgs/
 .conda_cache/
 venv/
 .venv/
 
-# VSCode remote
-.vscode-server/
+# Data / outputs
+data/
+outputs/
+runs_*/
+*.pt
+*.pth
+*.ckpt
 
-# Caches
-__pycache__/
-.ipynb_checkpoints/
+# OS
+.DS_Store
