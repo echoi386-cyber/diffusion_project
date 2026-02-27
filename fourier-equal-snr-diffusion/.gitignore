@@ -30,3 +30,13 @@ runs_*/
 .conda/
 .condarc
 .config/
+# Server / conda / cache junk
+.cache/
+.conda/
+.condarc
+.config/
+.vscode-server/
+
+# Outputs
+outputs/
+runs_*/
