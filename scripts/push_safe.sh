@@ -29,7 +29,7 @@ git diff --stat
 
 echo
 echo "=== Stage all intended changes ==="
-git add -A
+git add -A fourier-equal-snr-diffusion scripts .gitignore
 
 echo
 echo "=== Staged summary ==="
