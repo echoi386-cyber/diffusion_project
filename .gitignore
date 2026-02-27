@@ -35,3 +35,8 @@ runs_*/
 .condarc
 .config/
 fourier-equal-snr-diffusion/.config/
+.cache/
+.conda/
+.vscode-server/
+.condarc
+.config/
