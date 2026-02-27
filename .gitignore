@@ -41,3 +41,14 @@ fourier-equal-snr-diffusion/.config/
 .condarc
 .config/
 test1.ipynb
+.vscode-server/
+.cache/
+.conda/
+.condarc
+.config/
+outputs/
+runs_*/
+data/
+*.pt
+*.pth
+*.ckpt
