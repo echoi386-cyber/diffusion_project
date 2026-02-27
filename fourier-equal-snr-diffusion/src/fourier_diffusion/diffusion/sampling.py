@@ -12,7 +12,7 @@ def ddim_sample(
     steps: int = 100,
 ) -> torch.Tensor:
     """
-    Deterministic DDIM in Fourier space for EqualSNR/FlippedSNR,
+    Deterministic DDIM in Fourier space for EqualSNR / FlippedSNR,
     and in pixel space for DDPM.
     """
     device = fwd.device
