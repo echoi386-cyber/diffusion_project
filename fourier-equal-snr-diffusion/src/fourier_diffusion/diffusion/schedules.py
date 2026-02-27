@@ -19,7 +19,7 @@ def make_beta_schedule(T: int, beta_start: float = 1e-4, beta_end: float = 2e-2,
     betas = 1.0 - (alpha_bar[1:] / alpha_bar[:-1])
     return betas.clamp(1e-8, 0.999)
 
-ef alphas_from_betas(betas: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+def alphas_from_betas(betas: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
     # betas shape (T,)
     alphas = 1.0 - betas
     alpha_bar = torch.cumprod(alphas, dim=0)
