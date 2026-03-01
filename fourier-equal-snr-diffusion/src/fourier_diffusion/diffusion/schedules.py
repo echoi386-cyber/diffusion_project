@@ -1,4 +1,5 @@
 import torch
+import math
 from typing import Optional, Tuple
 
 #Schedules
@@ -11,7 +12,7 @@ def make_beta_schedule(T: int, beta_start: float = 1e-4, beta_end: float = 2e-2,
         raise ValueError(f"Unknown schedule: {schedule}")
 
     # cosine alpha_bar
-    steps = torch.arrange(T+1, device=device, dtype=torch.float32)
+    steps = torch.arange(T+1, device=device, dtype=torch.float32)
     f = torch.cos(((steps / T) + s) / (1 + s) * math.pi / 2) ** 2
     alpha_bar = f / f[0]
     alpha_bar = alpha_bar.clamp(1e-8, 1.0)

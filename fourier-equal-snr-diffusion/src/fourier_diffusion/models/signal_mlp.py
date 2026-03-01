@@ -1,41 +1,46 @@
+import math
 import torch
-from .forward_process_1d import rfft1, irfft1, Fourier1DLambdaForwardProcess
+import torch.nn as nn
+import torch.nn.functional as F
 
 
-@torch.no_grad()
-def reconstruct_from_xt_T(
-    model,
-    fwd: Fourier1DLambdaForwardProcess,
-    xt_T: torch.Tensor,
-    steps: int = 100,
-) -> torch.Tensor:
+class SinusoidalTimeEmbedding(nn.Module):
+    def __init__(self, dim: int):
+        super().__init__()
+        self.dim = dim
+
+    def forward(self, t: torch.Tensor) -> torch.Tensor:
+        half = self.dim // 2
+        freqs = torch.exp(-math.log(10000) * torch.arange(0, half, device=t.device).float() / max(half - 1, 1))
+        args = t.float().unsqueeze(1) * freqs.unsqueeze(0)
+        emb = torch.cat([torch.sin(args), torch.cos(args)], dim=1)
+        if self.dim % 2 == 1:
+            emb = F.pad(emb, (0, 1))
+        return emb
+
+
+class SignalMLP(nn.Module):
     """
-    Start from a provided x_T (from fwd.q_sample at t=T),
-    run deterministic DDIM update in Fourier domain.
+    Denoiser for 1D signals: predicts x0_hat given (x_t, t).
     """
-    device = fwd.device
-    B, N = xt_T.shape
-    T = fwd.cfg.T
-    ts = torch.linspace(T, 1, steps, device=device).long()
+    def __init__(self, length: int, hidden: int = 256, depth: int = 4, t_dim: int = 128):
+        super().__init__()
+        self.length = length
+        self.t_emb = nn.Sequential(
+            SinusoidalTimeEmbedding(t_dim),
+            nn.Linear(t_dim, t_dim),
+            nn.SiLU(),
+            nn.Linear(t_dim, t_dim),
+        )
 
-    y = rfft1(xt_T)  # initialize y_T from xt_T
+        layers = []
+        in_dim = length + t_dim
+        for _ in range(depth - 1):
+            layers += [nn.Linear(in_dim, hidden), nn.SiLU()]
+            in_dim = hidden
+        layers += [nn.Linear(in_dim, length)]
+        self.net = nn.Sequential(*layers)
 
-    for i, t_scalar in enumerate(ts):
-        t_int = int(t_scalar.item())
-        t = torch.full((B,), t_int, device=device, dtype=torch.long)
-
-        ab_t = fwd.alpha_bar[t_int - 1].view(1, 1).expand(B, 1)
-
-        x = irfft1(y, n=N)
-        x0_hat = model(x, t)
-        y0_hat = rfft1(x0_hat)
-
-        if i == len(ts) - 1:
-            return x0_hat
-
-        t_prev_int = int(ts[i + 1].item())
-        ab_prev = fwd.alpha_bar[t_prev_int - 1].view(1, 1).expand(B, 1)
-
-        y = torch.sqrt(ab_prev) * y0_hat + torch.sqrt(1.0 - ab_prev) / torch.sqrt(1.0 - ab_t) * (y - torch.sqrt(ab_t) * y0_hat)
-
-    return irfft1(y, n=N)
+    def forward(self, x: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
+        te = self.t_emb(t)
+        return self.net(torch.cat([x, te], dim=1))
