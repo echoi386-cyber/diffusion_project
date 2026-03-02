@@ -1,30 +1,21 @@
 import os
-from typing import Dict
-import matplotlib.pyplot as plt
 import torch
+import matplotlib.pyplot as plt
 
-# Plotting
-def plot_loss_curves(loss_hist: Dict[str, list], title: str, save_path: str):
-    plt.figure()
-    for k, v in loss_hist.items():
-        plt.plot(v, label=k)
-    plt.legend()
-    plt.xlabel("log step")
-    plt.ylabel("loss")
-    plt.title(title)
-    plt.tight_layout()
-    plt.savefig(save_path, dpi=150)
-    plt.show()
 
-def plot_radial_spectra(specs: Dict[str, torch.Tensor], title: str, save_path: str):
-    plt.figure()
-    for k, v in specs.items():
-        plt.plot(v.detach().cpu().numpy(), label=k)
-    plt.yscale("log")
-    plt.xlabel("radial frequency bin")
-    plt.ylabel("power")
-    plt.title(title)
+@torch.no_grad()
+def save_scatter(real: torch.Tensor, gen: torch.Tensor, path: str, lim: float = 8.0, n_show: int = 20000):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    real = real[:n_show].detach().cpu()
+    gen = gen[:n_show].detach().cpu()
+
+    plt.figure(figsize=(6, 6))
+    plt.scatter(real[:, 0], real[:, 1], s=2, alpha=0.35, label="real")
+    plt.scatter(gen[:, 0], gen[:, 1], s=2, alpha=0.35, label="gen")
+    plt.xlim([-lim, lim])
+    plt.ylim([-lim, lim])
+    plt.gca().set_aspect("equal", "box")
     plt.legend()
     plt.tight_layout()
-    plt.savefig(save_path, dpi=150)
-    plt.show()
+    plt.savefig(path, dpi=160)
+    plt.close()
