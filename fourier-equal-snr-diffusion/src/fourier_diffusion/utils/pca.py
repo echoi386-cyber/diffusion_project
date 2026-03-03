@@ -2,7 +2,7 @@ import torch
 
 def pca_from_data(X: torch.Tensor):
     """
-    X: (N, D) zero-mean preferred (we'll center anyway)
+    X: (N, D) zero-mean preferred
     Returns:
       U: (D, D) eigenvectors (columns) sorted by descending eigenvalue
       C: (D,) eigenvalues (descending)

@@ -108,7 +108,7 @@ def main():
     p.add_argument("--sinkhorn_iters", type=int, default=200)
     p.add_argument("--sinkhorn_max_points", type=int, default=2048)
 
-    # NEW: stabilization for EqualSNR whitening
+    # stabilization for EqualSNR whitening
     p.add_argument("--c_floor_rel", type=float, default=1e-3)
 
     p.add_argument("--no_amp", action="store_true")
@@ -173,7 +173,6 @@ def main():
                     extra_power=args.extra_power,
                 )
 
-                # Evaluate/plot only first 2 dims (keep MoG visualization)
                 gen2 = gen[:, :2]
                 real2 = real[:, :2]
 
