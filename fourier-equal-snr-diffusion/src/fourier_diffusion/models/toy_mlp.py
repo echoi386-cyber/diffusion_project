@@ -5,12 +5,9 @@ import torch.nn.functional as F
 
 
 class ToyMLP(nn.Module):
-    """
-    Predicts x0 directly from (xt, t) using x0-parameterization.
-    """
-
     def __init__(self, dim: int = 2, t_dim: int = 64, width: int = 256, depth: int = 4):
         super().__init__()
+        self.dim = dim
         self.t_dim = t_dim
 
         self.t_mlp = nn.Sequential(

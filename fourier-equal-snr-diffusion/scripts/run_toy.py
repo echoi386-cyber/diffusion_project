@@ -28,11 +28,13 @@ def train_one(
     amp: bool,
     ema_decay: float,
     ema_warmup: int,
+    c_floor_rel: float,
 ):
-    model = ToyMLP(dim=2, t_dim=64, width=256, depth=4).to(device)
+    d = X_all.shape[1]
+    model = ToyMLP(dim=d, t_dim=64, width=256, depth=4).to(device)
     opt = torch.optim.AdamW(model.parameters(), lr=lr)
 
-    fwd = ToyForward.from_data(schedule=schedule, X=X_all, T=T, device=device)
+    fwd = ToyForward.from_data(schedule=schedule, X=X_all, T=T, device=device, c_floor_rel=c_floor_rel)
 
     scaler = torch.cuda.amp.GradScaler(enabled=(amp and device.type == "cuda"))
     ema = EMA(model, decay=ema_decay, warmup_steps=ema_warmup, device=device)
@@ -57,8 +59,9 @@ def train_one(
             if schedule == "ddpm":
                 loss = F.mse_loss(x0_hat, x0)
             else:
+                # C^{-1/2} whitening in PCA space (stabilized by C floor)
                 y0_hat = x0_hat @ fwd.U
-                diff = (y0 - y0_hat) / torch.sqrt(fwd.C).view(1, 2)
+                diff = (y0 - y0_hat) / torch.sqrt(fwd.C).view(1, -1)
                 loss = (diff ** 2).mean()
 
         opt.zero_grad(set_to_none=True)
@@ -68,11 +71,9 @@ def train_one(
 
         ema.update(model, step=step)
 
-    # Build EMA model for sampling
-    ema_model = ToyMLP(dim=2, t_dim=64, width=256, depth=4).to(device)
+    ema_model = ToyMLP(dim=d, t_dim=64, width=256, depth=4).to(device)
     ema.apply_to(ema_model)
     ema_model.eval()
-
     model.eval()
     return model, ema_model, fwd
 
@@ -81,6 +82,10 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument("--outdir", type=str, default="outputs/toy")
     p.add_argument("--seed", type=int, default=0)
+
+    p.add_argument("--dim", type=int, default=2)
+    p.add_argument("--extra_scale", type=float, default=0.5)
+    p.add_argument("--extra_power", type=float, default=1.0)
 
     p.add_argument("--iters", type=int, default=12000)
     p.add_argument("--batch_size", type=int, default=2048)
@@ -103,6 +108,9 @@ def main():
     p.add_argument("--sinkhorn_iters", type=int, default=200)
     p.add_argument("--sinkhorn_max_points", type=int, default=2048)
 
+    # NEW: stabilization for EqualSNR whitening
+    p.add_argument("--c_floor_rel", type=float, default=1e-3)
+
     p.add_argument("--no_amp", action="store_true")
     args = p.parse_args()
 
@@ -110,7 +118,17 @@ def main():
     device = get_device()
     seed_all(args.seed)
 
-    X = make_mog_ring(args.train_n, k=args.k, radius=args.radius, std=args.std, device=device)
+    X = make_mog_ring(
+        args.train_n,
+        k=args.k,
+        radius=args.radius,
+        std=args.std,
+        device=device,
+        d=args.dim,
+        extra_scale=args.extra_scale,
+        extra_power=args.extra_power,
+    )
+
     loader = DataLoader(
         TensorDataset(X.detach().cpu()),
         batch_size=args.batch_size,
@@ -122,7 +140,7 @@ def main():
 
     metrics_path = os.path.join(args.outdir, "metrics.txt")
     with open(metrics_path, "w", encoding="utf-8") as f:
-        f.write("schedule\twhich\ttrain_sec\tsliced_W1\tapprox_W2_sinkhorn\n")
+        f.write("schedule\twhich\ttrain_sec\tsliced_W1_2d\tapprox_W2_sinkhorn_2d\n")
 
     for schedule in ["ddpm", "equal_snr"]:
         t0 = time.time()
@@ -137,26 +155,53 @@ def main():
             amp=(not args.no_amp),
             ema_decay=args.ema_decay,
             ema_warmup=args.ema_warmup,
+            c_floor_rel=args.c_floor_rel,
         )
         train_sec = time.time() - t0
 
         for which, model in [("raw", raw_model), ("ema", ema_model)]:
             with torch.no_grad():
                 gen = ddim_sample_toy(model, fwd, n=args.eval_n, steps=args.ddim_steps)
-                real = make_mog_ring(args.eval_n, k=args.k, radius=args.radius, std=args.std, device=device)
+                real = make_mog_ring(
+                    args.eval_n,
+                    k=args.k,
+                    radius=args.radius,
+                    std=args.std,
+                    device=device,
+                    d=args.dim,
+                    extra_scale=args.extra_scale,
+                    extra_power=args.extra_power,
+                )
 
-                sw1 = sliced_wasserstein_1(real, gen, n_proj=args.sw_proj)
+                # Evaluate/plot only first 2 dims (keep MoG visualization)
+                gen2 = gen[:, :2]
+                real2 = real[:, :2]
+
+                sw1 = sliced_wasserstein_1(real2, gen2, n_proj=args.sw_proj)
                 w2 = sinkhorn_w2_approx(
-                    real,
-                    gen,
+                    real2, gen2,
                     eps=args.sinkhorn_eps,
                     iters=args.sinkhorn_iters,
                     max_points=args.sinkhorn_max_points,
                 )
 
-            save_scatter(real, gen, os.path.join(args.outdir, f"scatter_{schedule}_{which}.png"))
+            title = f"{schedule} / {which} (d={args.dim})"
+            subtitle = (
+                f"SW1(2D)={sw1.item():.4f}  SinkhornW2(2D)≈{w2.item():.4f}  "
+                f"iters={args.iters}  ddim={args.ddim_steps}  "
+                f"extra_scale={args.extra_scale}  extra_power={args.extra_power}"
+            )
+            save_scatter(
+                real2, gen2,
+                os.path.join(args.outdir, f"scatter_{schedule}_{which}_d{args.dim}.png"),
+                title=title,
+                subtitle=subtitle,
+            )
 
-            print(f"[toy {schedule} {which}] train_time={train_sec:.1f}s  SW1={sw1.item():.4f}  approxW2(Sinkhorn)={w2.item():.4f}")
+            print(
+                f"[toy {schedule} {which} d={args.dim}] train_time={train_sec:.1f}s  "
+                f"SW1(2D)={sw1.item():.4f}  approxW2(2D)={w2.item():.4f}"
+            )
 
             with open(metrics_path, "a", encoding="utf-8") as f:
                 f.write(f"{schedule}\t{which}\t{train_sec:.6f}\t{sw1.item():.6f}\t{w2.item():.6f}\n")

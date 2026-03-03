@@ -6,14 +6,11 @@ from .toy_forward import ToyForward
 
 @torch.no_grad()
 def ddim_sample_toy(model: nn.Module, fwd: ToyForward, n: int, steps: int) -> torch.Tensor:
-    """
-    DDIM update in PCA space:
-      y_{t-1} = sqrt(ab_{t-1}) y0_hat + sqrt(1-ab_{t-1})/sqrt(1-ab_t) * (y_t - sqrt(ab_t) y0_hat)
-    """
     device = fwd.device
     B = n
+    d = fwd.C.shape[0]
 
-    y = torch.randn(B, 2, device=device) * torch.sqrt(fwd.Sigma).view(1, 2)
+    y = torch.randn(B, d, device=device) * torch.sqrt(fwd.Sigma).view(1, d)
     ts = torch.linspace(fwd.T, 1, steps, device=device).long()
 
     for i, t_scalar in enumerate(ts):

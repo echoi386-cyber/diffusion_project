@@ -14,6 +14,12 @@ venv/
 # Outputs / data
 data/
 outputs/
+!outputs/toy/metrics.txt
+!outputs/toy/scatter_ddpm_ema_d2.png
+!outputs/toy/scatter_ddpm_raw_d2.png
+!outputs/toy/scatter_equal_snr_ema_d2.png
+!outputs/toy/scatter_equal_snr_raw_d2.png
+
 runs_*/
 *.pt
 *.pth
