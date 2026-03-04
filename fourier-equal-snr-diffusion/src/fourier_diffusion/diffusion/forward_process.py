@@ -31,7 +31,7 @@ class FourierForwardProcess:
             self.C_diag = C_diag.to(device)
             self.Sigma_diag = make_sigma_diag(cfg.schedule, self.C_diag)
             if cfg.calibrate_alpha_bar and cfg.schedule == "equal_snr":
-                self.alpha_bar = calibrate_equal_snr_alpha_bar(alpha_bar_ddpm, self.C_diag)  # App. A.3 fileciteturn1file0L14-L78
+                self.alpha_bar = calibrate_equal_snr_alpha_bar(alpha_bar_ddpm, self.C_diag)  
             else:
                 self.alpha_bar = alpha_bar_ddpm
 
