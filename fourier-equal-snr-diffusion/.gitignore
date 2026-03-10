@@ -12,7 +12,7 @@ venv/
 .venv/
 
 # Outputs / data
-data/
+data/__pycache__
 outputs/
 !outputs/toy/metrics.txt
 !outputs/toy/scatter_ddpm_ema_d2.png
