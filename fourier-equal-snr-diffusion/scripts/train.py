@@ -5,12 +5,13 @@ import json
 from datetime import datetime
 
 import torch
+import torchvision.utils as vutils
+from PIL import Image
 
 from fourier_diffusion.utils.seed import get_device, seed_all
-from fourier_diffusion.utils.plots import plot_loss_curves, plot_radial_spectra
 from fourier_diffusion.utils.fft import radial_power_spectrum
 
-from fourier_diffusion.data.mnist import get_binary_mnist
+from fourier_diffusion.data.mnist import get_grayscale_mnist
 from fourier_diffusion.data.cifar10 import get_cifar10
 
 from fourier_diffusion.models.unet import SimpleUNet
@@ -18,28 +19,28 @@ from fourier_diffusion.diffusion.forward_process import FourierDiffusionConfig, 
 from fourier_diffusion.diffusion.covariance import estimate_C_diag_rfft2
 from fourier_diffusion.diffusion.losses import loss_x0_fourier_weighted
 from fourier_diffusion.diffusion.sampling import ddim_sample
-from fourier_diffusion.utils.masking import (
-    mask_pixels_bernoulli, mask_random_block, mask_random_halfplane
-)
 
 
-def apply_mask(x0: torch.Tensor, mode: str) -> torch.Tensor:
-    if mode == "none":
-        return x0
-    if mode == "bernoulli":
-        return mask_pixels_bernoulli(x0, p_zero=0.5)
-    if mode == "block":
-        return mask_random_block(x0, frac=0.4)
-    if mode == "halfplane":
-        return mask_random_halfplane(x0)
-    raise ValueError(f"Unknown mask_mode: {mode}")
+def save_image_grid(x: torch.Tensor, path: str, nrow: int = 8):
+    """
+    x: (B,C,H,W) in [-1,1]. Saves an RGB PNG grid.
+    - For MNIST (C=1), repeats channels to RGB for consistent viewing.
+    - For CIFAR (C=3), saves as RGB directly.
+    """
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    x = x.clamp(-1, 1)
+    x = (x + 1.0) * 0.5  # [0,1]
+    if x.shape[1] == 1:
+        x = x.repeat(1, 3, 1, 1)
+    grid = vutils.make_grid(x, nrow=nrow, padding=2)
+    arr = (grid.permute(1, 2, 0).cpu().numpy() * 255.0).round().astype("uint8")
+    Image.fromarray(arr, mode="RGB").save(path)
 
 
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--dataset", choices=["mnist", "cifar10"], required=True)
     p.add_argument("--schedule", choices=["ddpm", "equal_snr", "flipped_snr"], required=True)
-    p.add_argument("--mask_mode", choices=["none", "bernoulli", "block", "halfplane"], default="none")
 
     p.add_argument("--iters", type=int, default=8000)
     p.add_argument("--batch_size", type=int, default=128)
@@ -65,7 +66,7 @@ def main():
 
     # Load data
     if args.dataset == "mnist":
-        ds, dl = get_binary_mnist(args.batch_size, root="./data", num_workers=4)
+        ds, dl = get_grayscale_mnist(args.batch_size, root="./data", num_workers=4)
         in_ch, H, W = 1, 28, 28
     else:
         ds, dl = get_cifar10(args.batch_size, root="./data", num_workers=4)
@@ -79,7 +80,7 @@ def main():
     fwd = FourierForwardProcess(
         FourierDiffusionConfig(T=args.T, schedule=args.schedule, calibrate_alpha_bar=True),
         C_diag=C_diag,
-        device=device
+        device=device,
     )
 
     model = SimpleUNet(in_ch=in_ch, base=64, t_dim=128).to(device)
@@ -88,7 +89,9 @@ def main():
     losses = []
     loader_iter = iter(dl)
 
-    print(f"device={device} dataset={args.dataset} schedule={args.schedule} mask={args.mask_mode}")
+    print(f"device={device} dataset={args.dataset} schedule={args.schedule}")
+
+    last_x0 = None  # keep last batch for final spectrum plot
 
     for step in range(1, args.iters + 1):
         try:
@@ -98,10 +101,10 @@ def main():
             x0, _ = next(loader_iter)
 
         x0 = x0.to(device, non_blocking=True).float()
-        x0_in = apply_mask(x0, args.mask_mode)
+        last_x0 = x0
 
-        t = fwd.sample_t(x0_in.shape[0])
-        loss, _ = loss_x0_fourier_weighted(model, fwd, x0_in, t)
+        t = fwd.sample_t(x0.shape[0])
+        loss, _ = loss_x0_fourier_weighted(model, fwd, x0, t)
 
         opt.zero_grad(set_to_none=True)
         loss.backward()
@@ -110,7 +113,7 @@ def main():
 
         if step % args.log_every == 0:
             losses.append(float(loss.detach().cpu()))
-            print(f"[{args.dataset} {args.schedule} mask={args.mask_mode}] step {step}/{args.iters} loss {loss.item():.4f}")
+            print(f"[{args.dataset} {args.schedule}] step {step}/{args.iters} loss {loss.item():.4f}")
 
         if step % args.sample_every == 0:
             model.eval()
@@ -118,24 +121,22 @@ def main():
                 samp = ddim_sample(model, fwd, (64, in_ch, H, W), steps=args.steps_ddim).clamp(-1, 1)
             model.train()
 
-            real_spec = radial_power_spectrum(x0[:64])
-            gen_spec = radial_power_spectrum(samp)
-
-            plot_radial_spectra(
-                {"real": real_spec, f"gen_{args.schedule}": gen_spec},
-                f"{args.dataset} {args.schedule} mask={args.mask_mode} spectrum @ step {step}",
-                os.path.join(plot_dir, f"{args.dataset}_{args.schedule}_{args.mask_mode}_spec_step{step}.png"),
+            # Save sample image grid (MNIST and CIFAR)
+            save_image_grid(
+                samp,
+                os.path.join(plot_dir, f"{args.dataset}_{args.schedule}_samples_step{step}.png"),
+                nrow=8,
             )
 
+
     # Final plots + checkpoint
-    tag = f"{args.dataset}_{args.schedule}_{args.mask_mode}_seed{args.seed}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    tag = f"{args.dataset}_{args.schedule}_seed{args.seed}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     ckpt_path = os.path.join(ckpt_dir, f"{tag}.pt")
 
     torch.save(
         {
             "dataset": args.dataset,
             "schedule": args.schedule,
-            "mask_mode": args.mask_mode,
             "seed": args.seed,
             "T": args.T,
             "in_ch": in_ch,
@@ -149,25 +150,20 @@ def main():
         ckpt_path,
     )
 
-    plot_loss_curves(
-        {f"{args.schedule}_{args.mask_mode}": losses},
-        f"{args.dataset}: loss ({args.schedule}, mask={args.mask_mode})",
-        os.path.join(plot_dir, f"{tag}_loss.png"),
-    )
 
-    # Final spectrum plot (real batch vs generated)
+    # Final sampling + save images + spectrum
     model.eval()
     with torch.no_grad():
         samp = ddim_sample(model, fwd, (64, in_ch, H, W), steps=args.steps_ddim).clamp(-1, 1)
-    real_spec = radial_power_spectrum(x0[:64])
-    gen_spec = radial_power_spectrum(samp)
-    plot_radial_spectra(
-        {"real": real_spec, f"gen_{args.schedule}": gen_spec},
-        f"{args.dataset}: final spectrum ({args.schedule}, mask={args.mask_mode})",
-        os.path.join(plot_dir, f"{tag}_spec.png"),
+
+    save_image_grid(
+        samp,
+        os.path.join(plot_dir, f"{tag}_samples.png"),
+        nrow=8,
     )
 
-    # Save run metadata (reproducibility)
+
+    # Save run metadata
     with open(os.path.join(plot_dir, f"{tag}_run.json"), "w") as f:
         json.dump(vars(args), f, indent=2)
 

@@ -6,14 +6,19 @@ def main():
     outroot = "outputs"
     os.makedirs(outroot, exist_ok=True)
 
-    for sched in ["ddpm", "equal_snr", "flipped_snr"]:
+    for sched in ["ddpm", "equal_snr"]:
         subprocess.check_call([
             "python", "scripts/train.py",
             "--dataset", "mnist",
+            "--mnist_mode", "grayscale",
             "--schedule", sched,
-            "--iters", "8000",
+            "--mask_mode", "none",
+            "--iters", "50000",
             "--batch_size", "128",
-            "--outdir", outroot
+            "--sample_every", "5000",
+            "--steps_ddim", "200",
+            "--num_fid_samples", "10000",
+            "--outdir", outroot,
         ])
 
 if __name__ == "__main__":
