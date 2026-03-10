@@ -10,9 +10,7 @@ def main():
         subprocess.check_call([
             "python", "scripts/train.py",
             "--dataset", "mnist",
-            "--mnist_mode", "grayscale",
             "--schedule", sched,
-            "--mask_mode", "none",
             "--iters", "50000",
             "--batch_size", "128",
             "--sample_every", "5000",
