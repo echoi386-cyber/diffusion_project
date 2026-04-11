@@ -2,6 +2,7 @@
 import os
 import subprocess
 
+
 def main():
     outroot = "outputs"
     os.makedirs(outroot, exist_ok=True)
@@ -13,8 +14,9 @@ def main():
             "--schedule", sched,
             "--iters", "8000",
             "--batch_size", "128",
-            "--outdir", outroot
+            "--outdir", outroot,
         ])
+
 
 if __name__ == "__main__":
     main()
