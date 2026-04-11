@@ -1,0 +1,5 @@
+schedule	which	train_sec	sliced_W1_2d	approx_W2_sinkhorn_2d
+ddpm	raw	106.572593	0.275176	1.919443
+ddpm	ema	106.572593	0.100385	0.875021
+equal_snr	raw	104.744209	0.337779	2.025879
+equal_snr	ema	104.744209	0.102519	1.092057

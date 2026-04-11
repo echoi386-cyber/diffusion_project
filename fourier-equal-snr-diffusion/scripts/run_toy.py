@@ -1,90 +1,45 @@
 #!/usr/bin/env python3
 import argparse
 import os
-import math
+import time
 
 import torch
-import torch.nn as nn
+import torch.nn.functional as F
 from torch.utils.data import DataLoader, TensorDataset
 
 from fourier_diffusion.utils.seed import get_device, seed_all
-from fourier_diffusion.utils.plots import plot_loss_curves, plot_radial_spectra
-from fourier_diffusion.utils.fft import radial_power_spectrum
+from fourier_diffusion.utils.ema import EMA
+from fourier_diffusion.data.toy import make_mog_ring
 from fourier_diffusion.models.toy_mlp import ToyMLP
+from fourier_diffusion.diffusion.toy_forward import ToyForward
+from fourier_diffusion.diffusion.toy_sampling import ddim_sample_toy
+from fourier_diffusion.utils.wasserstein import sliced_wasserstein_1, sinkhorn_w2_approx
+from fourier_diffusion.utils.plots import save_scatter
 
 
-def make_mog(n: int, k: int, radius: float, std: float, device: torch.device):
-    angles = torch.linspace(0, 2 * math.pi, k + 1, device=device)[:-1]
-    centers = torch.stack([radius * torch.cos(angles), radius * torch.sin(angles)], dim=1)
-    idx = torch.randint(0, k, (n,), device=device)
-    return centers[idx] + std * torch.randn(n, 2, device=device)
-
-
-@torch.no_grad()
-def hist2d_density_torch(samples: torch.Tensor, bins: int = 128, lim: float = 8.0) -> torch.Tensor:
-    # samples: (N,2) on device
-    device = samples.device
-    x = samples[:, 0].clamp(-lim, lim)
-    y = samples[:, 1].clamp(-lim, lim)
-
-    xi = ((x + lim) * (bins / (2.0 * lim))).long().clamp(0, bins - 1)
-    yi = ((y + lim) * (bins / (2.0 * lim))).long().clamp(0, bins - 1)
-
-    H = torch.zeros((bins, bins), device=device, dtype=torch.float32)
-    H.index_put_((xi, yi), torch.ones_like(x, dtype=torch.float32), accumulate=True)
-
-    # density normalization (optional but stable)
-    bin_w = (2.0 * lim) / bins
-    area = bin_w * bin_w
-    H = H / (H.sum().clamp_min(1.0) * area)
-
-    return H.view(1, 1, bins, bins)
-
-
-class ToyForwardProcess:
-    # PCA-basis toy analogue: low_to_high(ddpm), equal_snr, high_to_low(flipped_snr)
-    def __init__(self, schedule: str, X: torch.Tensor, T: int, device: torch.device):
-        self.schedule = schedule
-        self.T = T
-        betas = torch.linspace(1e-4, 2e-2, T, device=device)
-        alphas = 1 - betas
-        self.alpha_bar = torch.cumprod(alphas, 0).clamp(1e-8, 1 - 1e-8)
-
-        Xc = X - X.mean(0, keepdim=True)
-        cov = (Xc.t() @ Xc) / Xc.shape[0]
-        eigvals, eigvecs = torch.linalg.eigh(cov)
-        self.U = eigvecs
-        self.C = eigvals.clamp_min(1e-8)
-
-        if schedule == "ddpm":
-            self.Sigma = torch.ones_like(self.C)
-        elif schedule == "equal_snr":
-            self.Sigma = self.C.clone()
-        elif schedule == "flipped_snr":
-            self.Sigma = (self.C / torch.flip(self.C, dims=[0]).clamp_min(1e-8)).clamp_min(1e-8)
-        else:
-            raise ValueError(schedule)
-
-    def sample_t(self, B: int, device: torch.device):
-        return torch.randint(1, self.T + 1, (B,), device=device)
-
-    def q_sample(self, x0: torch.Tensor, t: torch.Tensor):
-        B = x0.shape[0]
-        ab = self.alpha_bar[t - 1].view(B, 1)
-        y0 = x0 @ self.U
-        eps = torch.randn_like(y0)
-        eps_sigma = eps * torch.sqrt(self.Sigma).view(1, 2)
-        yt = torch.sqrt(ab) * y0 + torch.sqrt(1 - ab) * eps_sigma
-        xt = yt @ self.U.t()
-        return xt, y0
-
-
-def train_toy(schedule: str, loader: DataLoader, X_all: torch.Tensor, device: torch.device, T: int, iters: int, lr: float, log_every: int):
-    model = ToyMLP(dim=2).to(device)
+def train_one(
+    schedule: str,
+    loader: DataLoader,
+    X_all: torch.Tensor,
+    device: torch.device,
+    T: int,
+    iters: int,
+    lr: float,
+    amp: bool,
+    ema_decay: float,
+    ema_warmup: int,
+    c_floor_rel: float,
+):
+    d = X_all.shape[1]
+    model = ToyMLP(dim=d, t_dim=64, width=256, depth=4).to(device)
     opt = torch.optim.AdamW(model.parameters(), lr=lr)
 
-    fwd = ToyForwardProcess(schedule, X_all, T=T, device=device)
-    losses = []
+    fwd = ToyForward.from_data(schedule=schedule, X=X_all, T=T, device=device, c_floor_rel=c_floor_rel)
+
+    scaler = torch.cuda.amp.GradScaler(enabled=(amp and device.type == "cuda"))
+    ema = EMA(model, decay=ema_decay, warmup_steps=ema_warmup, device=device)
+
+    model.train()
     it = iter(loader)
 
     for step in range(1, iters + 1):
@@ -95,90 +50,160 @@ def train_toy(schedule: str, loader: DataLoader, X_all: torch.Tensor, device: to
             (x0_cpu,) = next(it)
 
         x0 = x0_cpu.to(device).float()
-        t = fwd.sample_t(x0.shape[0], device)
+        t = fwd.sample_t(x0.shape[0])
+        xt, y0, _ = fwd.q_sample(x0, t)
 
-        xt, y0 = fwd.q_sample(x0, t)
-        x0_hat = model(xt, t)
-        y0_hat = x0_hat @ fwd.U
+        with torch.cuda.amp.autocast(enabled=(amp and device.type == "cuda")):
+            x0_hat = model(xt, t)
 
-        diff = (y0 - y0_hat) / torch.sqrt(fwd.C).view(1, 2)
-        loss = (diff ** 2).mean()
+            if schedule == "ddpm":
+                loss = F.mse_loss(x0_hat, x0)
+            else:
+                # C^{-1/2} whitening in PCA space (stabilized by C floor)
+                y0_hat = x0_hat @ fwd.U
+                diff = (y0 - y0_hat) / torch.sqrt(fwd.C).view(1, -1)
+                loss = (diff ** 2).mean()
 
         opt.zero_grad(set_to_none=True)
-        loss.backward()
-        opt.step()
+        scaler.scale(loss).backward()
+        scaler.step(opt)
+        scaler.update()
 
-        if step % log_every == 0:
-            losses.append(float(loss.detach().cpu()))
-            print(f"[toy {schedule}] step {step}/{iters} loss {loss.item():.4f}")
+        ema.update(model, step=step)
 
-    return model, fwd, losses
-
-
-@torch.no_grad()
-def sample_toy(model: nn.Module, fwd: ToyForwardProcess, device: torch.device, n: int = 50000, steps: int = 200):
-    B = n
-    y = torch.randn(B, 2, device=device) * torch.sqrt(fwd.Sigma).view(1, 2)
-    ts = torch.linspace(fwd.T, 1, steps, device=device).long()
-
-    for i, t_scalar in enumerate(ts):
-        t = torch.full((B,), int(t_scalar.item()), device=device, dtype=torch.long)
-        ab_t = fwd.alpha_bar[t - 1].view(B, 1)
-        x = y @ fwd.U.t()
-        x0_hat = model(x, t)
-        y0_hat = x0_hat @ fwd.U
-
-        if i == len(ts) - 1:
-            return x0_hat
-
-        t_prev = ts[i + 1]
-        ab_prev = fwd.alpha_bar[t_prev - 1].view(1, 1)
-        eps = (y - torch.sqrt(ab_t) * y0_hat) / torch.sqrt(1 - ab_t)
-        y = torch.sqrt(ab_prev) * y0_hat + torch.sqrt(1 - ab_prev) * eps
-
-    return y @ fwd.U.t()
+    ema_model = ToyMLP(dim=d, t_dim=64, width=256, depth=4).to(device)
+    ema.apply_to(ema_model)
+    ema_model.eval()
+    model.eval()
+    return model, ema_model, fwd
 
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument("--outdir", type=str, default="outputs/plots/toy")
-    p.add_argument("--iters", type=int, default=6000)
-    p.add_argument("--batch_size", type=int, default=256)
-    p.add_argument("--lr", type=float, default=2e-4)
-    p.add_argument("--T", type=int, default=1000)
+    p.add_argument("--outdir", type=str, default="outputs/toy")
     p.add_argument("--seed", type=int, default=0)
+
+    p.add_argument("--dim", type=int, default=2)
+    p.add_argument("--extra_scale", type=float, default=0.5)
+    p.add_argument("--extra_power", type=float, default=1.0)
+
+    p.add_argument("--iters", type=int, default=12000)
+    p.add_argument("--batch_size", type=int, default=2048)
+    p.add_argument("--lr", type=float, default=1e-3)
+
+    p.add_argument("--ema_decay", type=float, default=0.999)
+    p.add_argument("--ema_warmup", type=int, default=200)
+
+    p.add_argument("--T", type=int, default=1000)
+    p.add_argument("--ddim_steps", type=int, default=600)
+
+    p.add_argument("--train_n", type=int, default=200000)
+    p.add_argument("--eval_n", type=int, default=50000)
+    p.add_argument("--k", type=int, default=8)
+    p.add_argument("--radius", type=float, default=4.0)
+    p.add_argument("--std", type=float, default=0.5)
+
+    p.add_argument("--sw_proj", type=int, default=256)
+    p.add_argument("--sinkhorn_eps", type=float, default=0.05)
+    p.add_argument("--sinkhorn_iters", type=int, default=200)
+    p.add_argument("--sinkhorn_max_points", type=int, default=2048)
+
+    # stabilization for EqualSNR whitening
+    p.add_argument("--c_floor_rel", type=float, default=1e-3)
+
+    p.add_argument("--no_amp", action="store_true")
     args = p.parse_args()
 
     os.makedirs(args.outdir, exist_ok=True)
     device = get_device()
     seed_all(args.seed)
 
-    X = make_mog(n=200000, k=8, radius=4.0, std=0.5, device=device)
-    loader = DataLoader(TensorDataset(X.detach().cpu()), batch_size=args.batch_size, shuffle=True, num_workers=0, pin_memory=True, drop_last=True)
+    X = make_mog_ring(
+        args.train_n,
+        k=args.k,
+        radius=args.radius,
+        std=args.std,
+        device=device,
+        d=args.dim,
+        extra_scale=args.extra_scale,
+        extra_power=args.extra_power,
+    )
 
-    schedules = ["ddpm", "equal_snr", "flipped_snr"]
-    models = {}
-    fwds = {}
-    loss_hist = {}
+    loader = DataLoader(
+        TensorDataset(X.detach().cpu()),
+        batch_size=args.batch_size,
+        shuffle=True,
+        num_workers=0,
+        pin_memory=(device.type == "cuda"),
+        drop_last=True,
+    )
 
-    for s in schedules:
-        m, fwd, losses = train_toy(s, loader, X, device, args.T, args.iters, args.lr, log_every=200)
-        models[s], fwds[s], loss_hist[s] = m, fwd, losses
+    metrics_path = os.path.join(args.outdir, "metrics.txt")
+    with open(metrics_path, "w", encoding="utf-8") as f:
+        f.write("schedule\twhich\ttrain_sec\tsliced_W1_2d\tapprox_W2_sinkhorn_2d\n")
 
-    plot_loss_curves(loss_hist, "Toy MoG: loss comparison (PCA-weighted)", os.path.join(args.outdir, "toy_loss.png"))
+    for schedule in ["ddpm", "equal_snr"]:
+        t0 = time.time()
+        raw_model, ema_model, fwd = train_one(
+            schedule=schedule,
+            loader=loader,
+            X_all=X,
+            device=device,
+            T=args.T,
+            iters=args.iters,
+            lr=args.lr,
+            amp=(not args.no_amp),
+            ema_decay=args.ema_decay,
+            ema_warmup=args.ema_warmup,
+            c_floor_rel=args.c_floor_rel,
+        )
+        train_sec = time.time() - t0
 
-    # Spectrum comparison via FFT of histogram density
-    specs = {}
-    real_H = hist2d_density_torch(make_mog(n=50000, k=8, radius=4.0, std=0.5, device=device), bins=128, lim=8.0)
-    specs["real"] = radial_power_spectrum(real_H)
+        for which, model in [("raw", raw_model), ("ema", ema_model)]:
+            with torch.no_grad():
+                gen = ddim_sample_toy(model, fwd, n=args.eval_n, steps=args.ddim_steps)
+                real = make_mog_ring(
+                    args.eval_n,
+                    k=args.k,
+                    radius=args.radius,
+                    std=args.std,
+                    device=device,
+                    d=args.dim,
+                    extra_scale=args.extra_scale,
+                    extra_power=args.extra_power,
+                )
 
-    for s in schedules:
-        samp = sample_toy(models[s], fwds[s], device=device, n=50000, steps=200)
-        H = hist2d_density_torch(samp, bins=128, lim=8.0)
-        specs[f"gen_{s}"] = radial_power_spectrum(H)
+                gen2 = gen[:, :2]
+                real2 = real[:, :2]
 
-    plot_radial_spectra(specs, "Toy MoG: radial spectrum of density histogram", os.path.join(args.outdir, "toy_spectrum.png"))
-    print("saved:", args.outdir)
+                sw1 = sliced_wasserstein_1(real2, gen2, n_proj=args.sw_proj)
+                w2 = sinkhorn_w2_approx(
+                    real2, gen2,
+                    eps=args.sinkhorn_eps,
+                    iters=args.sinkhorn_iters,
+                    max_points=args.sinkhorn_max_points,
+                )
+
+            title = f"{schedule} / {which} (d={args.dim})"
+            subtitle = (
+                f"SW1(2D)={sw1.item():.4f}  SinkhornW2(2D)≈{w2.item():.4f}  "
+                f"iters={args.iters}  ddim={args.ddim_steps}  "
+                f"extra_scale={args.extra_scale}  extra_power={args.extra_power}"
+            )
+            save_scatter(
+                real2, gen2,
+                os.path.join(args.outdir, f"scatter_{schedule}_{which}_d{args.dim}.png"),
+                title=title,
+                subtitle=subtitle,
+            )
+
+            print(
+                f"[toy {schedule} {which} d={args.dim}] train_time={train_sec:.1f}s  "
+                f"SW1(2D)={sw1.item():.4f}  approxW2(2D)={w2.item():.4f}"
+            )
+
+            with open(metrics_path, "a", encoding="utf-8") as f:
+                f.write(f"{schedule}\t{which}\t{train_sec:.6f}\t{sw1.item():.6f}\t{w2.item():.6f}\n")
 
 
 if __name__ == "__main__":

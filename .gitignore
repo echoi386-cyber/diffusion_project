@@ -1,12 +1,31 @@
-# Conda envs / Python envs
+# VSCode remote
+.vscode/
+.vscode-server/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.ipynb_checkpoints/
+
+# Conda / caches
+.cache/
+.conda/
+.condarc
+.config/
 .conda_envs/
 .conda_pkgs/
 .conda_cache/
 venv/
 .venv/
 
-# VSCode remote
-.vscode-server/
+# Data / outputs
+data/
+outputs/
+runs_*/
+*.pt
+*.pth
+*.ckpt
 
 # Caches
 __pycache__/
@@ -14,3 +33,29 @@ __pycache__/
 .vscode-server/
 .local/
 *.log
+# OS
+.DS_Store
+.vscode-server/
+.cache/
+.conda/
+.condarc
+.config/
+fourier-equal-snr-diffusion/.config/
+.cache/
+.conda/
+.vscode-server/
+.condarc
+.config/
+test1.ipynb
+.vscode-server/
+.cache/
+.conda/
+.condarc
+.config/
+outputs/
+runs_*/
+data/
+*.pt
+*.pth
+*.ckpt
+.ssh/
