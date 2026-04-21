@@ -1,5 +1,8 @@
-import torch
+import math
 from typing import Literal
+
+import torch
+
 from ..utils.fft import rfft2
 
 
@@ -8,15 +11,10 @@ def estimate_C_diag_rfft2(
     device: torch.device,
     n_batches: int = 200,
     clamp_min: float = 1e-8,
-    floor_rel: float = 1e-2,
 ) -> torch.Tensor:
     """
     Estimate C_i = Var[(y0)_i] in Fourier domain using rFFT2.
     Returns C_diag with shape (C,H,W//2+1).
-
-    Added only one practical stabilization:
-    apply a relative floor so tiny high-frequency bins do not
-    explode the C^{-1/2} weighting used by EqualSNR loss.
     """
     sum_re = None
     sum_im = None
@@ -30,8 +28,8 @@ def estimate_C_diag_rfft2(
 
         x0 = batch[0] if isinstance(batch, (list, tuple)) else batch
         x0 = x0.to(device, non_blocking=True).float()
-
         y0 = rfft2(x0)  # (B,C,H,Wf)
+
         re = y0.real
         im = y0.imag
 
@@ -54,11 +52,6 @@ def estimate_C_diag_rfft2(
     var_im = (sum_im2 / max(n, 1)) - mean_im ** 2
 
     C_diag = (var_re + var_im).clamp_min(clamp_min)
-
-    # Minimal stabilization for EqualSNR
-    floor_val = max(float((floor_rel * C_diag.mean()).item()), clamp_min)
-    C_diag = C_diag.clamp_min(floor_val)
-
     return C_diag
 
 
@@ -69,18 +62,21 @@ def make_sigma_diag(
     calibration: str = "fixed_trace",
 ) -> torch.Tensor:
     """
-    Return Sigma_ii for forward noise eps ~ CN(0, Sigma) (diagonal)
-    - DDPM: Sigma=I
-    - EqualSNR: Sigma=C
-    - FlippedSNR: Sigma_i = C_i / C_flipped(i)
+    Return Sigma_ii for forward noise eps ~ CN(0, Sigma) with diagonal Sigma.
+
+    - DDPM:       Sigma = I
+    - EqualSNR:   Sigma = C
+    - FlippedSNR: radial flip construction
+    - power_law:  Sigma_i ∝ C_i^lam, then calibrated
     """
     if scheme == "ddpm":
         return torch.ones_like(C_diag)
 
     if scheme == "equal_snr":
-        return C_diag.clone()
+        return C_diag.clone().clamp_min(1e-8)
 
     if scheme == "flipped_snr":
+        # Radial flip of the average spectrum
         C, H, Wf = C_diag.shape
         device = C_diag.device
 
@@ -94,7 +90,7 @@ def make_sigma_diag(
         r_flip = (r_max - r).clamp_min(0.0)
 
         nbins = int(max(H, Wf))
-        bins = torch.linspace(0.0, r_max, nbins, device=device)
+        bins = torch.linspace(0.0, float(r_max), nbins, device=device)
 
         idx = torch.bucketize(r.flatten(), bins) - 1
         idx = idx.clamp(0, nbins - 1).view(H, Wf)
@@ -106,20 +102,19 @@ def make_sigma_diag(
         counts = torch.zeros(nbins, device=device)
 
         for b in range(nbins):
-            mask = (idx == b)
+            mask = idx == b
             counts[b] = mask.sum().float().clamp_min(1.0)
-            Cbin[:, b] = (C_diag[:, mask].sum(dim=1)) / counts[b]
+            Cbin[:, b] = C_diag[:, mask].sum(dim=1) / counts[b]
 
-        C_flip = Cbin[:, idx_flip]
+        C_flip = Cbin[:, idx_flip]  # (C,H,Wf)
         Sigma = (C_diag / C_flip.clamp_min(1e-8)).clamp_min(1e-8)
         return Sigma
 
     if scheme == "power_law":
-    Sigma = C_diag.clamp_min(1e-8).pow(lam)
+        Sigma = C_diag.clamp_min(1e-8).pow(lam)
 
         if calibration == "fixed_trace":
-            # Make total noise power match the DDPM baseline.
-            # DDPM baseline trace = number of entries because Sigma = 1.
+            # Match total trace to DDPM baseline, where Sigma = 1 everywhere.
             target_trace = float(C_diag.numel())
             Sigma = Sigma * (target_trace / Sigma.sum().clamp_min(1e-8))
             return Sigma.clamp_min(1e-8)

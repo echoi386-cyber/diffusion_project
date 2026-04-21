@@ -1,4 +1,3 @@
-import math
 import torch
 from dataclasses import dataclass
 from typing import Dict, Optional, Tuple, Literal
@@ -6,6 +5,17 @@ from typing import Dict, Optional, Tuple, Literal
 from .schedules import make_beta_schedule, alphas_from_betas, calibrate_equal_snr_alpha_bar
 from .covariance import make_sigma_diag
 from ..utils.fft import rfft2, irfft2
+
+
+def sample_valid_rfft2_noise(
+    batch: int,
+    channels: int,
+    height: int,
+    width: int,
+    device: torch.device,
+) -> torch.Tensor:
+    x = torch.randn((batch, channels, height, width), device=device, dtype=torch.float32)
+    return rfft2(x)
 
 
 @dataclass
@@ -52,7 +62,6 @@ class FourierForwardProcess:
                     lam=cfg.lam,
                     calibration=cfg.calibration,
                 )
-                # fixed_trace calibration: keep cosine alpha_bar unchanged
                 self.alpha_bar = alpha_bar_ddpm
 
             else:
@@ -70,16 +79,6 @@ class FourierForwardProcess:
         t: torch.Tensor,
         noise: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
-        """
-        DDPM:
-            x_t = sqrt(ab) x0 + sqrt(1-ab) eps
-        Fourier variants:
-            y_t = sqrt(ab) y0 + sqrt(1-ab) eps_sigma
-            x_t = irfft2(y_t)
-
-        Keep the original complex Gaussian rFFT noise.
-        Do NOT manually force whole rows/columns real.
-        """
         B, C, H, W = x0.shape
         ab = self.alpha_bar_t(t).view(B, 1, 1, 1)
 
@@ -93,14 +92,11 @@ class FourierForwardProcess:
         Wf = y0.shape[-1]
 
         if noise is None:
-            eps = (
-                torch.randn((B, C, H, Wf), device=self.device) +
-                1j * torch.randn((B, C, H, Wf), device=self.device)
-            ) / math.sqrt(2.0)
+            eps = sample_valid_rfft2_noise(B, C, H, W, self.device).to(y0.dtype)
         else:
-            eps = noise
+            eps = noise.to(y0.dtype)
 
-        sigma_sqrt = torch.sqrt(self.Sigma_diag).unsqueeze(0)
+        sigma_sqrt = torch.sqrt(self.Sigma_diag).unsqueeze(0).to(y0.dtype)
         eps_sigma = eps * sigma_sqrt
 
         yt = torch.sqrt(ab) * y0 + torch.sqrt(1.0 - ab) * eps_sigma

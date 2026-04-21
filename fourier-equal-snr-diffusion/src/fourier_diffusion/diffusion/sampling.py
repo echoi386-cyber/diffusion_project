@@ -1,11 +1,10 @@
-import math
 from typing import Tuple
 
 import torch
 import torch.nn as nn
 
 from ..utils.fft import rfft2, irfft2
-from .forward_process import FourierForwardProcess
+from .forward_process import FourierForwardProcess, sample_valid_rfft2_noise
 
 
 @torch.no_grad()
@@ -39,10 +38,8 @@ def ddim_sample(
             x = torch.sqrt(ab_prev) * x0_hat + torch.sqrt(1.0 - ab_prev) * eps
         return x
 
-    # Fourier DDIM
-    Wf = W // 2 + 1
-    eps = (torch.randn((B, C, H, Wf), device=device) + 1j * torch.randn((B, C, H, Wf), device=device)) / math.sqrt(2.0)
-    y = eps * torch.sqrt(fwd.Sigma_diag).unsqueeze(0)
+    eps = sample_valid_rfft2_noise(B, C, H, W, device)
+    y = eps * torch.sqrt(fwd.Sigma_diag).unsqueeze(0).to(eps.dtype)
 
     for idx, t in enumerate(ts):
         t_batch = torch.full((B,), int(t.item()), device=device, dtype=torch.long)

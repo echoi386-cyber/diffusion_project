@@ -1,0 +1,21 @@
+{
+  "dataset": "cifar10",
+  "schedule": "ddpm",
+  "iters": 50000,
+  "batch_size": 128,
+  "lr": 0.0002,
+  "T": 1000,
+  "n_C_batches": 200,
+  "log_every": 200,
+  "sample_every": 5000,
+  "save_every": 5000,
+  "steps_ddim": 200,
+  "num_workers": 4,
+  "ema_decay": 0.9999,
+  "ema_warmup": 2000,
+  "c_floor_rel": 0.001,
+  "seed": 0,
+  "outdir": "outputs_pilot/ddpm50k",
+  "resume": "",
+  "no_amp": false
+}
