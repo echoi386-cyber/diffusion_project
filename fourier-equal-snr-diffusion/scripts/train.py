@@ -85,6 +85,25 @@ def build_model(
         return DiffusersUNet(in_ch=in_ch, sample_size=H, base_channels=128)
     return SimpleUNet(in_ch=in_ch, base=64, t_dim=128)
 
+def load_model_weights_only_from_ckpt(model: torch.nn.Module, ckpt_path: str, device: torch.device) -> None:
+    ckpt = torch.load(ckpt_path, map_location=device)
+
+    if "ema_state" in ckpt and isinstance(ckpt["ema_state"], dict) and "shadow" in ckpt["ema_state"]:
+        src = ckpt["ema_state"]["shadow"]
+        print(f"loaded EMA weights only from checkpoint: {ckpt_path}")
+    else:
+        src = ckpt["model_state"]
+        print(f"loaded raw model weights only from checkpoint: {ckpt_path}")
+
+    model_sd = model.state_dict()
+    copied = 0
+    for k in model_sd:
+        if k in src and src[k].shape == model_sd[k].shape:
+            model_sd[k] = src[k].to(device=device, dtype=model_sd[k].dtype)
+            copied += 1
+
+    model.load_state_dict(model_sd, strict=False)
+    print(f"copied {copied} tensors from checkpoint into model")
 
 def main() -> None:
     p = argparse.ArgumentParser()
@@ -110,12 +129,21 @@ def main() -> None:
     p.add_argument("--ema_decay", type=float, default=0.9999)
     p.add_argument("--ema_warmup", type=int, default=2000)
     p.add_argument("--c_floor_rel", type=float, default=1e-3)
+    p.add_argument("--grad_clip", type=float, default=1.0)
+    p.add_argument("--no_calibrate_alpha_bar", action="store_true")
 
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--outdir", type=str, default="outputs")
     p.add_argument("--resume", type=str, default="")
+    p.add_argument(
+    "--init_from_ckpt",
+    type=str,
+    default="",
+    help="Load model weights only from a local checkpoint. Prefer EMA weights if available. Does not load optimizer, scaler, or step.",)
     p.add_argument("--no_amp", action="store_true")
     args = p.parse_args()
+    if args.resume and args.init_from_ckpt:
+        raise ValueError("Use either --resume or --init_from_ckpt, not both.")
 
     device = get_device()
     seed_all(args.seed)
@@ -152,7 +180,7 @@ def main() -> None:
             schedule=args.schedule,
             lam=args.lam,
             calibration=args.calibration,
-            calibrate_alpha_bar=True,
+            calibrate_alpha_bar=(not args.no_calibrate_alpha_bar),
         ),
         C_diag=C_diag,
         device=device,
@@ -167,6 +195,32 @@ def main() -> None:
     loader_iter = iter(dl)
     last_x0 = None
     start_step = 1
+
+    if args.resume:
+        ckpt = torch.load(args.resume, map_location=device)
+        model.load_state_dict(ckpt["model_state"], strict=True)
+        opt.load_state_dict(ckpt["opt_state"])
+
+        if "scaler_state" in ckpt and ckpt["scaler_state"] is not None:
+            scaler.load_state_dict(ckpt["scaler_state"])
+
+        if "ema_state" in ckpt and ckpt["ema_state"] is not None:
+            ema.load_state_dict(ckpt["ema_state"])
+        losses = ckpt.get("losses", [])
+        start_step = int(ckpt["step"]) + 1
+        print(f"resumed full training state from {args.resume} at step {start_step}")
+
+    elif args.init_from_ckpt:
+        load_model_weights_only_from_ckpt(model, args.init_from_ckpt, device)
+        ema = EMA(model, decay=args.ema_decay, warmup_steps=args.ema_warmup, device=device)
+        print(f"initialized model from checkpoint weights only: {args.init_from_ckpt}")
+
+    elif args.init_from_hf:
+
+        print(f"initialized model from HF repo: {args.hf_repo_id}")
+
+    else:
+        print("training from random initialization")
 
     def build_ema_model() -> torch.nn.Module:
         ema_model = copy.deepcopy(model).to(device)
@@ -184,6 +238,7 @@ def main() -> None:
                 "hf_repo_id": args.hf_repo_id if args.init_from_hf else "",
                 "lam": args.lam,
                 "calibration": args.calibration,
+                "calibrate_alpha_bar": (not args.no_calibrate_alpha_bar),
                 "seed": args.seed,
                 "T": args.T,
                 "in_ch": in_ch,
@@ -200,17 +255,6 @@ def main() -> None:
             path,
         )
 
-    if args.resume:
-        ckpt = torch.load(args.resume, map_location=device)
-        model.load_state_dict(ckpt["model_state"])
-        opt.load_state_dict(ckpt["opt_state"])
-        if "scaler_state" in ckpt:
-            scaler.load_state_dict(ckpt["scaler_state"])
-        if "ema_state" in ckpt:
-            ema.load_state_dict(ckpt["ema_state"])
-        losses = ckpt.get("losses", [])
-        start_step = int(ckpt["step"]) + 1
-        print(f"resumed from {args.resume} at step {start_step}")
 
     print(f"device={device} dataset={args.dataset} schedule={args.schedule} model={model_name} amp={use_amp}")
 
@@ -241,7 +285,8 @@ def main() -> None:
 
         scaler.scale(loss).backward()
         scaler.unscale_(opt)
-        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+        if args.grad_clip > 0:
+            torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
         scaler.step(opt)
         scaler.update()
 

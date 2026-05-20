@@ -1,9 +1,8 @@
-import math
 from typing import Literal
 
 import torch
 
-from ..utils.fft import rfft2
+from ..utils.fft import rfft2, rfft2_onesided_weights
 
 
 def estimate_C_diag_rfft2(
@@ -76,7 +75,6 @@ def make_sigma_diag(
         return C_diag.clone().clamp_min(1e-8)
 
     if scheme == "flipped_snr":
-        # Radial flip of the average spectrum
         C, H, Wf = C_diag.shape
         device = C_diag.device
 
@@ -114,9 +112,20 @@ def make_sigma_diag(
         Sigma = C_diag.clamp_min(1e-8).pow(lam)
 
         if calibration == "fixed_trace":
-            # Match total trace to DDPM baseline, where Sigma = 1 everywhere.
-            target_trace = float(C_diag.numel())
-            Sigma = Sigma * (target_trace / Sigma.sum().clamp_min(1e-8))
+            channels, height, widthf = C_diag.shape
+            width = 2 * (widthf - 1)
+
+            mult = rfft2_onesided_weights(
+                height,
+                width,
+                device=Sigma.device,
+                dtype=Sigma.dtype,
+            ).unsqueeze(0)  # (1,H,Wf)
+
+            target_trace = mult.sum() * channels
+            current_trace = (Sigma * mult).sum().clamp_min(1e-8)
+
+            Sigma = Sigma * (target_trace / current_trace)
             return Sigma.clamp_min(1e-8)
 
         raise ValueError(f"Unsupported calibration for power_law: {calibration}")

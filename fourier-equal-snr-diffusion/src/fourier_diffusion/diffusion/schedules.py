@@ -4,6 +4,7 @@ from typing import Optional, Tuple
 import torch
 
 from fourier_diffusion.utils.seed import get_device
+from fourier_diffusion.utils.fft import rfft2_onesided_weights
 
 
 def make_beta_schedule(
@@ -38,7 +39,6 @@ def snr_from_alpha_bar(
     C: Optional[torch.Tensor] = None,
     Sigma_diag: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
-    # s_t(i) = alpha_bar_t * C_i / ((1-alpha_bar_t) * Sigma_ii)
     T = alpha_bar.shape[0]
     if C is None:
         C = torch.ones(1, device=alpha_bar.device)
@@ -49,11 +49,18 @@ def snr_from_alpha_bar(
 
 
 def calibrate_equal_snr_alpha_bar(alpha_bar_ddpm: torch.Tensor, C_diag: torch.Tensor) -> torch.Tensor:
-    """
-    Match average SNR across frequencies between DDPM and EqualSNR.
-    Derived in your existing comment and consistent with paper calibration idea.
-    """
-    meanC = C_diag.mean()
+    channels, height, widthf = C_diag.shape
+    width = 2 * (widthf - 1)
+
+    mult = rfft2_onesided_weights(
+        height,
+        width,
+        device=C_diag.device,
+        dtype=C_diag.dtype,
+    ).unsqueeze(0)
+
+    meanC = (C_diag * mult).sum() / (mult.sum() * channels)
+
     ab = alpha_bar_ddpm
     ab_eq = (ab * meanC) / ((1.0 - ab) + ab * meanC)
     return ab_eq.clamp(1e-8, 1.0 - 1e-8)

@@ -13,8 +13,13 @@ def sample_valid_rfft2_noise(
     height: int,
     width: int,
     device: torch.device,
+    dtype: torch.dtype = torch.float32,
 ) -> torch.Tensor:
-    x = torch.randn((batch, channels, height, width), device=device, dtype=torch.float32)
+    """
+    Sample valid one-sided Fourier noise by drawing real white noise in pixel space
+    and transforming it with rFFT2.
+    """
+    x = torch.randn((batch, channels, height, width), device=device, dtype=dtype)
     return rfft2(x)
 
 
@@ -79,6 +84,17 @@ class FourierForwardProcess:
         t: torch.Tensor,
         noise: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
+        """
+        DDPM:
+            x_t = sqrt(ab) x0 + sqrt(1-ab) eps
+
+        Fourier variants:
+            y_t = sqrt(ab) y0 + sqrt(1-ab) eps_sigma
+            x_t = irfft2(y_t)
+
+        For Fourier variants, eps is sampled as valid one-sided rFFT noise by
+        drawing real white noise in image space and applying rfft2.
+        """
         B, C, H, W = x0.shape
         ab = self.alpha_bar_t(t).view(B, 1, 1, 1)
 
@@ -89,14 +105,20 @@ class FourierForwardProcess:
             return xt, {"x0": x0, "noise": noise, "alpha_bar": ab.squeeze()}
 
         y0 = rfft2(x0)
-        Wf = y0.shape[-1]
 
         if noise is None:
-            eps = sample_valid_rfft2_noise(B, C, H, W, self.device).to(y0.dtype)
+            eps = sample_valid_rfft2_noise(
+                batch=B,
+                channels=C,
+                height=H,
+                width=W,
+                device=self.device,
+                dtype=x0.dtype,
+            )
         else:
-            eps = noise.to(y0.dtype)
+            eps = noise.to(device=self.device, dtype=y0.dtype)
 
-        sigma_sqrt = torch.sqrt(self.Sigma_diag).unsqueeze(0).to(y0.dtype)
+        sigma_sqrt = torch.sqrt(self.Sigma_diag).to(device=self.device, dtype=x0.dtype).unsqueeze(0)
         eps_sigma = eps * sigma_sqrt
 
         yt = torch.sqrt(ab) * y0 + torch.sqrt(1.0 - ab) * eps_sigma

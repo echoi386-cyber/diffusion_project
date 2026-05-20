@@ -1,48 +1,34 @@
-# Python
 __pycache__/
 *.pyc
-*.pyo
 .ipynb_checkpoints/
 
-# Env / conda
-.conda_envs/
-.conda_pkgs/
-.conda_cache/
-venv/
-.venv/
-
-# Outputs / data
-data/__pycache__
+data/
+datasets/
 outputs/
-!outputs/toy/metrics.txt
-!outputs/toy/scatter_ddpm_ema_d2.png
-!outputs/toy/scatter_ddpm_raw_d2.png
-!outputs/toy/scatter_equal_snr_ema_d2.png
-!outputs/toy/scatter_equal_snr_raw_d2.png
+outputs_eval/
+checkpoints/
+logs/
+runs/
+wandb/
 
-runs_*/
+fourier-equal-snr-diffusion/outputs/
+fourier-equal-snr-diffusion/outputs_eval/
+fourier-equal-snr-diffusion/data/
+fourier-equal-snr-diffusion/checkpoints/
+fourier-equal-snr-diffusion/logs/
+
 *.pt
 *.pth
 *.ckpt
+*.safetensors
+*.npz
+*.npy
+*.png
+*.jpg
+*.jpeg
+*.pptx
+*.pdf
 
-# VSCode remote
 .vscode/
-.vscode-server/
-
-# OS
+.idea/
 .DS_Store
-# Conda / cache (server)
-.cache/
-.conda/
-.condarc
-.config/
-# Server / conda / cache junk
-.cache/
-.conda/
-.condarc
-.config/
-.vscode-server/
-
-# Outputs
-outputs/
-runs_*/
