@@ -4,12 +4,23 @@ __pycache__/
 
 data/
 datasets/
-outputs/
-outputs_eval/
+outputs*/
+outputs_eval*/
 checkpoints/
 logs/
 runs/
 wandb/
+toy_out/
+
+fourier-equal-snr-diffusion/data/
+fourier-equal-snr-diffusion/datasets/
+fourier-equal-snr-diffusion/outputs*/
+fourier-equal-snr-diffusion/outputs_eval*/
+fourier-equal-snr-diffusion/checkpoints/
+fourier-equal-snr-diffusion/logs/
+fourier-equal-snr-diffusion/runs/
+fourier-equal-snr-diffusion/wandb/
+fourier-equal-snr-diffusion/toy_out/
 
 *.pt
 *.pth
